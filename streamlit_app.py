@@ -1,10 +1,13 @@
 import streamlit as st
 from datetime import datetime
 import pandas as pd
-from prophet import Prophet 
-from scipy import stats 
+from scipy import stats
 import numpy as np
+import holidays
+import itertools
 import matplotlib.pyplot as plt
+from prophet import Prophet 
+from prophet.diagnostics import performance_metrics, cross_validation
 
 # Load data from dataset
 def loadData(dataset):
@@ -80,7 +83,7 @@ if __name__ == "__main__":
         # limit date range to dates with more data
         # get number of years in dataset from end date
         endDate = datetime.strptime(df['date'].max(), "%Y-%m-%d")
-        selectedYears = st.slider("Select number of years to include in analysis", 1, 5, 3)
+        selectedYears = st.slider("Select number of years to include in analysis", 1, 5, 2)
         startDate = endDate.replace(year=endDate.year - selectedYears)
         st.write(f"To ensure sufficient data for analysis, the date range will be limited to {startDate.date()} to {endDate.date()}.")
         pivot = pivot[(pivot.index >= str(startDate.date())) & (pivot.index <= str(endDate.date()))]        
@@ -122,8 +125,7 @@ if __name__ == "__main__":
         st.write("")
 
         # remove outliers using z-score
-        # remove rows where any category has z-score > 2.7 or < -2.7 (99.7% confidence interval)
-        from scipy import stats 
+        # remove rows where any category has z-score > 2.7 or < -2.7 (99.7% confidence interval) 
         zScores = np.abs(stats.zscore(pivot, nan_policy='omit'))
         outlierRows = np.where(zScores > 2.7)[0]
         st.subheader("Outlier Removal")
@@ -137,12 +139,80 @@ if __name__ == "__main__":
         pivot = pivot.drop(pivot.index[outlierRows])
         st.write("")
 
+        st.subheader("Tuning and Back Testing")
+        changePointPriorScale = np.linspace(0.001, 0.5, 5).tolist()
+        seasonalityPriorScale = np.linspace(0.01, 10, 5).tolist()
+
+        metrics = {}
+        for col in pivot.columns:
+            categoryDf = pivot[col].copy().reset_index()
+            categoryDf.columns = ['ds', 'y']
+            categoryDf['y'] = categoryDf['y'].apply(pd.to_numeric)
+            categoryDf['ds'] = pd.to_datetime(categoryDf['ds'])
+
+            grid = {
+                "changepoint_prior_scale": changePointPriorScale,
+                #"seasonality_prior_scale": seasonalityPriorScale,
+                #"holidays_prior_scale": holidaysPriorScale
+            }
+
+        # Combine all components of grid
+        params = [dict(zip(grid.keys(), v)) for v in itertools.product(*grid.values())]
+        mapeCalc = []
+
+        # Evaluate parameters using cross validation
+        for param in params:
+            # pass in parameters to Prophet model
+            model = Prophet(**param).fit(categoryDf)
+            # Predict every thirty days of data after the first year of data iteratively for the next thirty days
+            # Compare the predicted data to the actual data
+            validateDf = cross_validation(model, initial='365 days', period='30 days', horizon='30 days')
+            performanceDf = performance_metrics(validateDf, rolling_window=1)
+            mapeCalc.append(performanceDf["mape"].values[0])
+        tuningResults = pd.DataFrame(params)
+        tuningResults["mape"] = mapeCalc
+        
+        st.write("Peformance Metrics")
+        st.write(col)
+
+        # Find best parameters for each category
+        featureParams = dict(tuningResults.sort("mape").reset_index(drop=True).iloc[0])
+        featureParams['column'] = col
+        metrics[col] = featureParams
+
+        # Holiday seasonality
+        holiday = pd.DataFrame([])
+        countryHolidays = holidays.EC()
+        for date_, name in sorted(holidays.EC(years=[2015,2016,2017,2018]).items()):
+            # Set holiday periods as three days before a holiday and a day after 
+            holiday = pd.concat([holiday, pd.Dataframe({'ds': date_, 'holiday': 'EC_Holidays', 'lower_window': -3, 'upper_window':1}, index=[0])], ignore_index=True)
+        holiday['ds'] = pd.to_datetime(holidays['ds'], format="%Y-%m-%d", errors='ignore')
+        
+        # Add holiday seasonality to model
+        forecastedDf = []
+        for col in pivot.columns:
+            categoryDf = pivot[col].copy().reset_index()
+            categoryDf.columns = ['ds', 'y']
+            categoryDf['y'] = categoryDf['y'].apply(pd.to_numeric)
+            categoryDf['ds'] = pd.to_datetime(categoryDf['ds'])
+            
+            featureParams = metrics[col]
+
+            model = Prophet(
+                changepoint_prior_scale=changePointPriorScale,
+                seasonality_prior_scale=seasonalityPriorScale,
+                seasonality_mode='multiplicative',
+                holidays_prior_scale=holiday
+            )
+            model.fit(categoryDf)
+
     if setting == "Forecasting":
         st.title("Retail Store Inventory and Demand Forecasting")
         # Category selector
         selectedCategory = st.selectbox("Select Category", categories)
         st.write("")
         st.subheader("Sales Forecasting")
+        allCategoryForecast = st.toggle("Show All Sales Forecasting Categories", False)
         if selectedCategory == "ALL": # if all data is selected
             if allCategoryForecast == False:
                 st.warning("Forecasting for all categories is innacurate, please select a category.")
