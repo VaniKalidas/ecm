@@ -5,6 +5,7 @@ from prophet import Prophet
 from scipy import stats 
 import numpy as np
 import matplotlib.pyplot as plt
+import tempfile
 import ollama
 import tempfile
 import base64
@@ -169,9 +170,6 @@ if __name__ == "__main__":
                 plt.ylabel("Sales")
                 plt.xlabel("Date")
                 st.pyplot(figure)
-                st.write("Forecast Components")
-                forecastFig = model.plot_components(forecast)
-                st.pyplot(forecastFig)
         else: # if a category is slected
             allCategoryForecast = st.toggle("Show All Sales Forecasting Categories", True)
             # show categories that have not been dropped from pivot
@@ -189,39 +187,38 @@ if __name__ == "__main__":
                 model = Prophet(yearly_seasonality=True, daily_seasonality=False, weekly_seasonality=True)
                 model.fit(series)
                 # Create future dataframe for next 90 days
-                future = model.make_future_dataframe(periods=90)
+                selectedPeriod = st.slider("Select number of days to include in forecasting", 5, 120, 90, step=5)
+                future = model.make_future_dataframe(periods=selectedPeriod)
                 forecast = model.predict(future)
                 # Plot forecast
                 figure = model.plot(forecast)
                 st.pyplot(figure)
-                st.write("Forecast Components")
-                fig2 = model.plot_components(forecast)
-                st.pyplot(fig2)
             else:
                 st.warning("Selected category not found in the data")
+        st.write("")
 
+        if (selectedCategory == "ALL" and allCategoryForecast == True) or (selectedCategory != "ALL" and selectedCategory in pivot.columns):
+            st.subheader("Analysis")
+            if st.button("Run Analysis"):
+                with st.spinner("Analysing forecasting sales data..."):
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as chart:
+                        # download plot as image to temporary file
+                        figure.savefig(chart.name)
+                        chartPath = chart.name
 
-        '''st.subheader("Analysis")
-        if st.button("Run Analysis"):
-            with st.spinner("Analysing forecasting sales data..."):
-                with chart.NamedTemporaryFile(suffix=".png", delete=False)as chart:
-                    figure.write_image(chart.name)
-                    chartPath = chart.name
+                    with open(chartPath, 'rb') as chartImage:
+                        image = base64.b64encode(chartImage.read()).decode('utf-8')
 
+                    analysisMessage = [{
+                        'role': 'user',
+                        'content': """You are an inventory analyst specialising in technical analysis at a chain store.
+                            Analyse the inventory in the chart and provide a recommendation on the amount of inventory that should be purchased.
+                            Based on your recomendation only on the sales chart provided. 
+                            First give your recommendation and then give a detailed justification.
+                            """,
+                        'images': [image]
+                    }]
+                    response = ollama.chat(model='llama3.2-version', messages=analysisMessage)
 
-                with open(chartPath, 'rb') as chartImage:
-                    image = base64.b64encode(chartImage.read()).decode('utf-8')
-
-                analysisMessage = [{
-                    'role': 'user',
-                    'content': """You are an inventory analyst specialising in technical analysis at a chain store.
-                        Analyse the inventory in the chart and provide a recommendation on the amount of inventory that should be purchased.
-                        Based on your recomendation only on the sales chart provided. 
-                        First give your recommendation and then give a detailed justification.
-                        """,
-                    'images': [image]
-                }]
-                response = ollama.chat(model='llama3.2-version', messages=analysisMessage)
-
-            st.write(response['message']['content'])
-            os.remove(chartPath)'''
+                st.write(response['message']['content'])
+                os.remove(chartPath)
