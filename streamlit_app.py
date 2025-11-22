@@ -5,11 +5,6 @@ from prophet import Prophet
 from scipy import stats 
 import numpy as np
 import matplotlib.pyplot as plt
-import tempfile
-import ollama
-import tempfile
-import base64
-import os
 
 # Load data from dataset
 def loadData(dataset):
@@ -149,11 +144,9 @@ if __name__ == "__main__":
         st.write("")
         st.subheader("Sales Forecasting")
         if selectedCategory == "ALL": # if all data is selected
-            allCategoryForecast = st.toggle("Show All Sales Forecasting", False)
             if allCategoryForecast == False:
                 st.warning("Forecasting for all categories is innacurate, please select a category.")
             else:
-                st.write("Sales Forecasting For All Categories")
                 series = pivot.reset_index()
                 series = series.melt(id_vars=['date'], var_name='family', value_name='sales')
                 series.columns = ['ds', 'family', 'y']
@@ -162,6 +155,7 @@ if __name__ == "__main__":
                 model.fit(series)
                 # Create future dataframe for next 90 days
                 selectedPeriod = st.slider("Select number of days to include in forecasting", 5, 120, 90, step=5)
+                st.write("Sales Forecasting For All Categories")
                 future = model.make_future_dataframe(periods=selectedPeriod)
                 forecast = model.predict(future)
                 # Plot forecast
@@ -192,33 +186,9 @@ if __name__ == "__main__":
                 forecast = model.predict(future)
                 # Plot forecast
                 figure = model.plot(forecast)
+                plt.ylabel("Sales")
+                plt.xlabel("Date")
                 st.pyplot(figure)
             else:
                 st.warning("Selected category not found in the data")
         st.write("")
-
-        if (selectedCategory == "ALL" and allCategoryForecast == True) or (selectedCategory != "ALL" and selectedCategory in pivot.columns):
-            st.subheader("Analysis")
-            if st.button("Run Analysis"):
-                with st.spinner("Analysing forecasting sales data..."):
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as chart:
-                        # download plot as image to temporary file
-                        figure.savefig(chart.name)
-                        chartPath = chart.name
-
-                    with open(chartPath, 'rb') as chartImage:
-                        image = base64.b64encode(chartImage.read()).decode('utf-8')
-
-                    analysisMessage = [{
-                        'role': 'user',
-                        'content': """You are an inventory analyst specialising in technical analysis at a chain store.
-                            Analyse the inventory in the chart and provide a recommendation on the amount of inventory that should be purchased.
-                            Based on your recomendation only on the sales chart provided. 
-                            First give your recommendation and then give a detailed justification.
-                            """,
-                        'images': [image]
-                    }]
-                    response = ollama.chat(model='llama3.2-version', messages=analysisMessage)
-
-                st.write(response['message']['content'])
-                os.remove(chartPath)
