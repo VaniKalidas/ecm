@@ -4,6 +4,7 @@ import pandas as pd
 from prophet import Prophet 
 from scipy import stats 
 import numpy as np
+import matplotlib.pyplot as plt
 import ollama
 import tempfile
 import base64
@@ -35,10 +36,19 @@ def calculateMAPE(actualVal, predictVal):
 
 if __name__ == "__main__":
     st.set_page_config(layout="wide") # use full width of page
-    st.sidebar.header("Settings")
+    st.sidebar.header("Pages")
     setting = st.sidebar.selectbox("Setting", ("Raw Data", "Data Insights", "Forecasting"))
+    # side bar menu options with buttons for raw data, data insights, forecasting
+    #selectedSetting = "Raw Data"
+    #if selectedSetting == "Raw Data":
+    #    setting = "Raw Data"
+    #if selectedSetting == "Data Insights":
+    #    setting = "Data Insights"
+    #if selectedSetting == "Forecasting":
+    #    setting = "Forecasting"
+
+
     df = loadData("train.csv")
-    
     categories = np.insert(df['family'].unique(), 0, "ALL")
     # Aggregate sales per date and family, then pivot to wide format
     salesByDate = df.groupby(['date', 'family'])['sales'].sum().reset_index()
@@ -116,17 +126,79 @@ if __name__ == "__main__":
         st.write("")
 
         # remove outliers using z-score
-        # remove rows where any category has z-score > 3 or < -3
+        # remove rows where any category has z-score > 2.7 or < -2.7 (99.7% confidence interval)
         from scipy import stats 
         zScores = np.abs(stats.zscore(pivot, nan_policy='omit'))
-        outlierRows = np.where(zScores > 3)[0]
+        outlierRows = np.where(zScores > 2.7)[0]
         st.subheader("Outlier Removal")
+        # display number of outlier rows being removed by category
+        st.write("Number of outlier rows being removed by category:")
+        for i, category in enumerate(pivot.columns):
+            numOutliers = np.sum(zScores[:, i] > 2.7)
+            st.write(f"{category}: {numOutliers} outlier rows")
         st.write(f"Removing {len(outlierRows)} rows with outliers based on z-score method.")
+        st.write("The remaining rows are 3 standard deviations from the mean with 99.7% confidence.")
         pivot = pivot.drop(pivot.index[outlierRows])
         st.write("")
 
     if setting == "Forecasting":
         st.title("Retail Store Inventory and Demand Forecasting")
+        # Category selector
+        selectedCategory = st.selectbox("Select Category", categories)
+        st.write("")
+        st.subheader("Sales Forecasting")
+        if selectedCategory == "ALL": # if all data is selected
+            allCategoryForecast = st.toggle("Show All Sales Forecasting", False)
+            if allCategoryForecast == False:
+                st.warning("Forecasting for all categories is innacurate, please select a category.")
+            else:
+                st.write("Sales Forecasting For All Categories")
+                series = pivot.reset_index()
+                series = series.melt(id_vars=['date'], var_name='family', value_name='sales')
+                series.columns = ['ds', 'family', 'y']
+                # Train Prophet model
+                model = Prophet(yearly_seasonality=True, daily_seasonality=False, weekly_seasonality=True)
+                model.fit(series)
+                # Create future dataframe for next 90 days
+                selectedPeriod = st.slider("Select number of days to include in forecasting", 5, 120, 90, step=5)
+                future = model.make_future_dataframe(periods=selectedPeriod)
+                forecast = model.predict(future)
+                # Plot forecast
+                figure = model.plot(forecast)
+                # change y and x labels using matplotlib
+                plt.ylabel("Sales")
+                plt.xlabel("Date")
+                st.pyplot(figure)
+                st.write("Forecast Components")
+                forecastFig = model.plot_components(forecast)
+                st.pyplot(forecastFig)
+        else: # if a category is slected
+            allCategoryForecast = st.toggle("Show All Sales Forecasting Categories", True)
+            # show categories that have not been dropped from pivot
+            # list categories not dropped
+            if allCategoryForecast:
+                st.write("Categories Available For Forecasting:")
+                for category in pivot.columns:
+                    st.write(f"- {category}")
+                st.write("")
+            if selectedCategory in pivot.columns:
+                st.write(f"Sales Forecasting For {selectedCategory}")
+                series = pivot[[selectedCategory]].reset_index()
+                series.columns = ['ds', 'y']
+                # Train Prophet model
+                model = Prophet(yearly_seasonality=True, daily_seasonality=False, weekly_seasonality=True)
+                model.fit(series)
+                # Create future dataframe for next 90 days
+                future = model.make_future_dataframe(periods=90)
+                forecast = model.predict(future)
+                # Plot forecast
+                figure = model.plot(forecast)
+                st.pyplot(figure)
+                st.write("Forecast Components")
+                fig2 = model.plot_components(forecast)
+                st.pyplot(fig2)
+            else:
+                st.warning("Selected category not found in the data")
 
 
         '''st.subheader("Analysis")
