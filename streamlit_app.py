@@ -1,9 +1,8 @@
 import streamlit as st
-from datetime import date, datetime
+from datetime import datetime
 import pandas as pd
 from prophet import Prophet 
-from prophet.plot import plot_plotly 
-from plotly import graph_objs as go
+from scipy import stats 
 import numpy as np
 import ollama
 import tempfile
@@ -16,20 +15,13 @@ def loadData(dataset):
     df.columns = df.columns.str.replace(' ', '_').str.lower()
     return df
 
-# Plot data
-def plotData(df):
-    figure = go.Figure()
-    figure.add_trace(go.Scatter(x=df['date'], y=df['family']))
-    figure.layout.update(xaxis_rangeslider_visible=True)
-    st.plotly_chart(figure)
-
 # Clean data in dataset
 def getMissingData(df):
     totalNullSum = df.isnull().sum()
     totalNullCount = df.isnull().count()
     nullPercent = totalNullSum / totalNullCount * 100
     nullTable = pd.concat([totalNullSum, nullPercent], axis = 1, keys = ['Total', 'Percent'])
-    return pd.Dataframe(nullTable)
+    return pd.DataFrame(nullTable)
 
 # Train data using train dataset
 
@@ -50,7 +42,7 @@ if __name__ == "__main__":
     categories = np.insert(df['family'].unique(), 0, "ALL")
     # Aggregate sales per date and family, then pivot to wide format
     salesByDate = df.groupby(['date', 'family'])['sales'].sum().reset_index()
-    pivot = salesByDate.pivot(index='date', columns='family', values='sales').fillna(0)
+    pivot = salesByDate.pivot(index='date', columns='family', values='sales')
 
     if setting == "Raw Data":
         st.title("Raw Data")
@@ -61,6 +53,7 @@ if __name__ == "__main__":
         if selectedCategory == "ALL": # if all data is selected
             st.write("Sample Sales Data")
             st.write(pivot.head(15))
+            st.write("")
             st.write("")
             st.write("All Sales By Category")
             st.line_chart(pivot, x_label="Date of Sales", y_label="Number of Sales")
@@ -76,7 +69,61 @@ if __name__ == "__main__":
 
     if setting == "Data Insights":
         st.title("Data Insights")
+        st.subheader("Dates in Dataset")
+        st.write(f"Data is from {df['date'].min()} to {df['date'].max()}.")
+        # limit date range to dates with more data
+        # get number of years in dataset from end date
+        endDate = datetime.strptime(df['date'].max(), "%Y-%m-%d")
+        selectedYears = st.slider("Select number of years to include in analysis", 1, 5, 3)
+        startDate = endDate.replace(year=endDate.year - selectedYears)
+        st.write(f"To ensure sufficient data for analysis, the date range will be limited to {startDate.date()} to {endDate.date()}.")
+        pivot = pivot[(pivot.index >= str(startDate.date())) & (pivot.index <= str(endDate.date()))]        
+        st.write("")
 
+        # how much data is N/A
+        st.subheader("Missing Data Analysis")
+        st.write("The table below shows the total number and percentage of missing values for each category.")
+        st.write(getMissingData(pivot).head(33))
+        if getMissingData(pivot).isnull().sum().sum() == 0:
+            st.write("No missing data found in the dataset.")
+        else:
+            st.write("Missing data found in the dataset. Values will be filled with 0 for analysis purposes.")
+            df = df.fillna(0)
+        st.write("")
+
+        # categories that have average daily sales less than $1000
+        totalNumCategories = pivot.shape[1]
+        lowSalesCategories = pivot.mean()[pivot.mean() < 1000]
+        st.subheader("Low Sales Categories")
+        st.write(f"There are {len(lowSalesCategories)} out of {totalNumCategories} categories with average daily sales less than 1000 units.")
+        for category in lowSalesCategories.index:
+            st.write(f"{category}: Average Daily Sales = {lowSalesCategories[category]:.2f} units")
+        st.write("These categories are being dropped due to insufficient sales volume for reliable forecasting.")
+        pivot = pivot.drop(columns=lowSalesCategories.index)
+        st.write("")
+
+        # categories that have long periods of zero sales
+        st.subheader("Categories with Extended Zero Sales Periods")
+        st.write("The table below shows the percentage of rows with zero sales for each category.")
+        st.write((pivot == 0).astype(int).sum(axis=0) / len(pivot.sum(axis=0)))
+        longZeroSalesCategories = (pivot == 0).astype(int).sum(axis=0) / len(pivot.sum(axis=0))
+        longZeroSalesCategories = longZeroSalesCategories[longZeroSalesCategories > 0.5]
+        st.write(f"There are {len(longZeroSalesCategories)} out of {totalNumCategories} categories with more than 50% of days having zero sales.")
+        for category in longZeroSalesCategories.index:
+            st.write(f"{category}: {longZeroSalesCategories[category]*100:.2f}% days with zero sales")
+        st.write("These categories are being dropped due to extended periods of zero sales affecting forecasting accuracy.")
+        pivot = pivot.drop(columns=longZeroSalesCategories.index)
+        st.write("")
+
+        # remove outliers using z-score
+        # remove rows where any category has z-score > 3 or < -3
+        from scipy import stats 
+        zScores = np.abs(stats.zscore(pivot, nan_policy='omit'))
+        outlierRows = np.where(zScores > 3)[0]
+        st.subheader("Outlier Removal")
+        st.write(f"Removing {len(outlierRows)} rows with outliers based on z-score method.")
+        pivot = pivot.drop(pivot.index[outlierRows])
+        st.write("")
 
     if setting == "Forecasting":
         st.title("Retail Store Inventory and Demand Forecasting")
